@@ -33,22 +33,28 @@ import {
   WifiOff,
   Plus
 } from "lucide-react";
-import { ContentItem, UserProfile, SubscriptionPlan, PaymentTransaction } from "./types";
+import { ContentItem, UserProfile, SubscriptionPlan, PaymentTransaction, AuthUser, UserDevice } from "./types";
 import { TCNLogo, BrandingInjector } from "./components/Branding";
 import { LivePlayer } from "./components/LivePlayer";
 import { AdminPanel } from "./components/AdminPanel";
 import { CommunityForum } from "./components/CommunityForum";
 import { AIRecommend } from "./components/AIRecommend";
+import { AuthScreen } from "./components/AuthScreen";
 
 export default function App() {
   // Global App States
   const [isEnglish, setIsEnglish] = useState(false); // Default to Kiswahili!
   const [isOnline, setIsOnline] = useState(true); // Offline mode toggle simulator
-  const [currentUser, setCurrentUser] = useState<string | null>(null); // Logged in user email
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null); // Logged in user details
   const [activeProfile, setActiveProfile] = useState<UserProfile | null>(null);
   const [hasPremium, setHasPremium] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+
+  // Device & session management states
+  const [showDevicesModal, setShowDevicesModal] = useState(false);
+  const [userDevices, setUserDevices] = useState<UserDevice[]>([]);
+  const [loadingDevices, setLoadingDevices] = useState(false);
 
   // Layout Nav States
   const [activeTab, setActiveTab] = useState<"home" | "forums" | "ai" | "admin" | "watchlist">("home");
@@ -98,10 +104,35 @@ export default function App() {
     { id: "sub-family", name: "Kifurushi cha Familia (Family VIP)", priceTZS: "TZS 120,000", priceUSD: "$48.00", period: "year", features: ["4K HDR multi-channel", "Ulinzi wa Parental Control kwa watoto", "All premium TV & radio streams included"], icon: "Shield" }
   ];
 
-  // Load catalog on mount
+  // Load catalog on mount and verify user session
   useEffect(() => {
     fetchCatalog();
     setWatchlistIds(JSON.parse(localStorage.getItem("tcn_watchlist") || "[]"));
+
+    // Check JWT session
+    const token = localStorage.getItem("tcn_jwt_token");
+    if (token) {
+      fetch("/api/auth/me", {
+        headers: { "Authorization": `Bearer ${token}` }
+      })
+      .then(res => {
+        if (!res.ok) throw new Error("Stale session");
+        return res.json();
+      })
+      .then(user => {
+        setCurrentUser(user);
+        // Customise profiles list to reflect user's real name
+        setProfiles(prev => [
+          { id: "p-adult", name: user.name, avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&auto=format&fit=crop&q=60", isKids: false, parentalControlPin: "1234" },
+          prev[1]
+        ]);
+      })
+      .catch(err => {
+        console.warn("Session restore failed, cleaning token", err);
+        localStorage.removeItem("tcn_jwt_token");
+        setCurrentUser(null);
+      });
+    }
 
     // Default notifications
     setNotifications([
@@ -117,6 +148,61 @@ export default function App() {
       setCatalog(data);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleAuthSuccess = (token: string, user: AuthUser) => {
+    localStorage.setItem("tcn_jwt_token", token);
+    setCurrentUser(user);
+    // Sync profile name
+    setProfiles(prev => [
+      { id: "p-adult", name: user.name, avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&auto=format&fit=crop&q=60", isKids: false, parentalControlPin: "1234" },
+      prev[1]
+    ]);
+  };
+
+  const handleSignOutAll = () => {
+    localStorage.removeItem("tcn_jwt_token");
+    setCurrentUser(null);
+    setActiveProfile(null);
+  };
+
+  const fetchUserDevices = async () => {
+    const token = localStorage.getItem("tcn_jwt_token");
+    if (!token) return;
+    setLoadingDevices(true);
+    try {
+      const res = await fetch("/api/auth/devices", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUserDevices(data);
+      }
+    } catch (e) {
+      console.error("Failed to load user active devices", e);
+    } finally {
+      setLoadingDevices(false);
+    }
+  };
+
+  const handleLogoutDevice = async (sessionId: string) => {
+    const token = localStorage.getItem("tcn_jwt_token");
+    if (!token) return;
+    try {
+      const res = await fetch("/api/auth/logout-device", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ sessionId })
+      });
+      if (res.ok) {
+        fetchUserDevices();
+      }
+    } catch (e) {
+      console.error("Remote signout failed", e);
     }
   };
 
@@ -232,6 +318,15 @@ export default function App() {
       setHeroIndex(prev => (prev - 1 + featuredBanners.length) % featuredBanners.length);
     }
   };
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-[#02040a] text-slate-100 flex flex-col justify-between font-sans relative antialiased selection:bg-orange-500 selection:text-slate-950 overflow-x-hidden">
+        <BrandingInjector />
+        <AuthScreen isEnglish={isEnglish} onAuthSuccess={handleAuthSuccess} />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#02040a] text-slate-100 flex flex-col justify-between font-sans relative antialiased selection:bg-orange-500 selection:text-slate-950 overflow-x-hidden">
@@ -394,23 +489,50 @@ export default function App() {
 
             {/* Profile Picker indicator / triggers */}
             {activeProfile ? (
-              <div className="flex items-center gap-2 border-l border-slate-900 pl-3">
-                <button
-                  onClick={() => setActiveProfile(null)}
-                  className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800/80 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                >
-                  <img src={activeProfile.avatar} alt="" className="w-4.5 h-4.5 rounded-full" />
-                  <span className="max-w-[70px] truncate hidden md:inline text-slate-200">{activeProfile.name}</span>
-                  <LogOut className="w-3 h-3 text-red-400 ml-1" />
-                </button>
+              <div className="flex items-center gap-2 border-l border-white/5 pl-3">
+                <div className="relative group">
+                  <button className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer">
+                    <img src={activeProfile.avatar} alt="" className="w-5 h-5 rounded-full" />
+                    <span className="max-w-[85px] truncate hidden md:inline text-slate-200">{activeProfile.name}</span>
+                  </button>
+                  
+                  {/* Dropdown Menu on Hover */}
+                  <div className="absolute right-0 mt-1.5 bg-[#0a0d14] border border-white/10 rounded-xl shadow-2xl p-2 w-44 scale-0 group-hover:scale-100 transition-all origin-top-right z-50 flex flex-col gap-1 text-xs">
+                    <button
+                      onClick={() => setActiveProfile(null)}
+                      className="w-full text-left py-2 px-2.5 hover:bg-white/5 rounded-lg text-slate-300 hover:text-white font-bold transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <User className="w-3.5 h-3.5 text-orange-400" />
+                      <span>{isEnglish ? "Switch Profile" : "Badili Wasifu"}</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        fetchUserDevices();
+                        setShowDevicesModal(true);
+                      }}
+                      className="w-full text-left py-2 px-2.5 hover:bg-white/5 rounded-lg text-slate-300 hover:text-white font-bold transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>{isEnglish ? "My Devices" : "Vifaa Vyangu"}</span>
+                    </button>
+                    <hr className="border-white/5 my-1" />
+                    <button
+                      onClick={handleSignOutAll}
+                      className="w-full text-left py-2 px-2.5 hover:bg-red-500/10 rounded-lg text-red-400 hover:text-red-300 font-bold transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>{isEnglish ? "Sign Out" : "Toka Seva"}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             ) : (
               <button
-                onClick={() => setIsAuthModalOpen(true)}
-                className="bg-orange-500 text-slate-950 hover:bg-orange-600 font-bold text-xs py-1.5 px-4 rounded-lg cursor-pointer flex items-center gap-1 transition-all"
+                onClick={handleSignOutAll}
+                className="bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 font-bold text-xs py-1.5 px-3.5 rounded-lg cursor-pointer flex items-center gap-1 transition-all"
               >
-                <User className="w-4 h-4 text-slate-950" />
-                <span>Login</span>
+                <LogOut className="w-4 h-4" />
+                <span>{isEnglish ? "Sign Out" : "Toka"}</span>
               </button>
             )}
           </div>
@@ -937,6 +1059,108 @@ export default function App() {
                 </form>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* SCENARIO G: MULTI-DEVICE MANAGEMENT MODAL */}
+      {showDevicesModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0b0e14] border border-white/10 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-fade-in text-slate-100">
+            {/* Header */}
+            <div className="p-5 border-b border-white/5 flex justify-between items-center bg-[#07090d]">
+              <div>
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Smartphone className="w-5 h-5 text-emerald-400" />
+                  {isEnglish ? "Manage Active Devices" : "Dhibiti Vifaa Vilivyounganishwa"}
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  {isEnglish
+                    ? "View and remotely sign out of any device currently active on your account."
+                    : "Tazama na utoe kifaa chochote kilichounganishwa na akaunti yako sasa hivi."}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowDevicesModal(false)}
+                className="text-slate-400 hover:text-white text-sm bg-white/5 hover:bg-white/10 rounded-full h-8 w-8 flex items-center justify-center transition-all cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* List */}
+            <div className="p-5 flex flex-col gap-4 max-h-[350px] overflow-y-auto">
+              {loadingDevices ? (
+                <div className="py-8 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs">
+                  <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+                  <span>{isEnglish ? "Retrieving active sessions..." : "Inatafuta vifaa vilivyounganishwa..."}</span>
+                </div>
+              ) : userDevices.length === 0 ? (
+                <div className="py-8 text-center text-slate-400 text-xs">
+                  {isEnglish ? "No active devices found." : "Hakuna kifaa kilichounganishwa."}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {userDevices.map(device => {
+                    // Detect device type based on user-agent/name
+                    const isTV = device.deviceName.toLowerCase().includes("tv") || device.deviceName.toLowerCase().includes("tizen") || device.deviceName.toLowerCase().includes("webos");
+                    const isPC = device.deviceName.toLowerCase().includes("windows") || device.deviceName.toLowerCase().includes("mac") || device.deviceName.toLowerCase().includes("linux");
+                    
+                    return (
+                      <div
+                        key={device.id}
+                        className={`p-4 rounded-xl border transition-all flex items-center justify-between gap-4 ${
+                          device.isCurrent
+                            ? "border-emerald-500/30 bg-emerald-500/5"
+                            : "border-white/5 bg-white/5"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3.5">
+                          <div className={`p-2.5 rounded-xl ${device.isCurrent ? "bg-emerald-500/10 text-emerald-400" : "bg-white/5 text-slate-400"}`}>
+                            {isTV ? <Tv className="w-5 h-5" /> : isPC ? <Sliders className="w-5 h-5" /> : <Smartphone className="w-5 h-5" />}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-bold text-white">{device.deviceName}</span>
+                              {device.isCurrent && (
+                                <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full">
+                                  {isEnglish ? "Current" : "Kiki Hiki"}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-slate-400 mt-1 font-mono">
+                              <span>IP: {device.ipAddress}</span>
+                              <span className="text-slate-600">•</span>
+                              <span>{device.location}</span>
+                              <span className="text-slate-600">•</span>
+                              <span>{device.lastActive}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {!device.isCurrent && (
+                          <button
+                            onClick={() => handleLogoutDevice(device.id)}
+                            className="bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 font-bold text-[11px] py-1.5 px-3 rounded-lg cursor-pointer transition-all border border-red-500/20"
+                          >
+                            {isEnglish ? "Sign Out" : "Toka Kifaa"}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer option */}
+            <div className="p-4 bg-[#07090d] border-t border-white/5 text-center">
+              <p className="text-[10px] text-slate-500">
+                {isEnglish
+                  ? "TCN security session tokens are signed cryptographically for multi-device protection."
+                  : "Ulinzi wa akaunti yako ya TCN unatumia cryptografia thabiti kulinda vifaa vyote."}
+              </p>
+            </div>
           </div>
         </div>
       )}

@@ -102,3 +102,19 @@ export interface SystemNotification {
   read: boolean;
   timestamp: string;
 }
+
+export interface AuthUser {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+}
+
+export interface UserDevice {
+  id: string;
+  deviceName: string;
+  ipAddress: string;
+  location: string;
+  lastActive: string;
+  isCurrent: boolean;
+}

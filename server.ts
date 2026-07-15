@@ -8,6 +8,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -421,8 +422,476 @@ let forumReplies = [
 ];
 
 // API: Health check
+// API: Health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
+});
+
+// ==========================================
+// TCN PRE-SET AUTHENTICATION BACKEND SYSTEM
+// ==========================================
+
+interface TCNUser {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  passwordHash: string;
+  isEmailVerified: boolean;
+  isPhoneVerified: boolean;
+  createdAt: string;
+}
+
+interface TCNSession {
+  id: string;
+  userId: string;
+  deviceName: string;
+  ipAddress: string;
+  location: string;
+  lastActive: string;
+  userAgent: string;
+}
+
+interface TCNOTP {
+  target: string;
+  code: string;
+  expiresAt: number;
+}
+
+// Memory database with predefined seed user (Anjelina Mitto)
+const tcnUsers: TCNUser[] = [
+  {
+    id: "u-seed-1",
+    name: "Anjelina Mitto",
+    email: "anjelinemitto120@gmail.com",
+    phone: "+255768123456",
+    passwordHash: crypto.createHash("sha256").update("password123").digest("hex"),
+    isEmailVerified: true,
+    isPhoneVerified: true,
+    createdAt: new Date().toISOString()
+  }
+];
+
+const tcnSessions: TCNSession[] = [
+  {
+    id: "sess-seed-1",
+    userId: "u-seed-1",
+    deviceName: "Smart TV (TCN App)",
+    ipAddress: "197.149.177.10",
+    location: "Dar es Salaam, TZ",
+    lastActive: "Muda huu",
+    userAgent: "Mozilla/5.0 (Tizen; SmartTV)"
+  },
+  {
+    id: "sess-seed-2",
+    userId: "u-seed-1",
+    deviceName: "Windows PC (Web)",
+    ipAddress: "102.219.12.45",
+    location: "Zanzibar, TZ",
+    lastActive: "Masaa 2 yaliyopita",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64)"
+  }
+];
+
+const tcnOTPs: TCNOTP[] = [];
+
+// Helper: JWT-like token generation
+function generateToken(userId: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ sub: userId, iat: Math.floor(Date.now() / 1000) })).toString("base64url");
+  const secret = process.env.JWT_SECRET || "tcn-super-secret-key-2026";
+  const hmac = crypto.createHmac("sha256", secret);
+  hmac.update(`${header}.${payload}`);
+  const signature = hmac.digest("base64url");
+  return `${header}.${payload}.${signature}`;
+}
+
+// Helper: JWT token verification
+function verifyToken(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [header, payload, signature] = parts;
+    const secret = process.env.JWT_SECRET || "tcn-super-secret-key-2026";
+    const hmac = crypto.createHmac("sha256", secret);
+    hmac.update(`${header}.${payload}`);
+    const expectedSignature = hmac.digest("base64url");
+    if (signature !== expectedSignature) return null;
+    const decodedPayload = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return decodedPayload.sub;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Helper: User-Agent parser to extract device type beautifully
+function parseUserAgent(uaString: string): string {
+  if (!uaString) return "Kifaa Kisichojulikana";
+  const ua = uaString.toLowerCase();
+  if (ua.includes("smart-tv") || ua.includes("smarttv") || ua.includes("tizen") || ua.includes("webos") || ua.includes("appletv")) {
+    return "Smart TV (TCN App)";
+  }
+  if (ua.includes("iphone") || ua.includes("ipad")) {
+    return "Apple iOS Device";
+  }
+  if (ua.includes("android")) {
+    if (ua.includes("mobile")) return "Android Phone";
+    return "Android Tablet";
+  }
+  if (ua.includes("windows")) return "Windows PC (Web)";
+  if (ua.includes("macintosh")) return "MacBook / iMac (Web)";
+  if (ua.includes("linux")) return "Linux PC (Web)";
+  return "Web Browser Console";
+}
+
+// API: Register User
+app.post("/api/auth/register", (req, res) => {
+  const { name, email, phone, password, method } = req.body;
+
+  if (!name || (!email && !phone) || !password) {
+    return res.status(400).json({ error: "Name, credentials and password are required" });
+  }
+
+  // Check if user already exists
+  if (email) {
+    const existing = tcnUsers.find(u => u.email === email.toLowerCase());
+    if (existing) {
+      return res.status(400).json({ error: "Email address is already registered!" });
+    }
+  }
+
+  if (phone) {
+    const existing = tcnUsers.find(u => u.phone === phone);
+    if (existing) {
+      return res.status(400).json({ error: "Phone number is already registered!" });
+    }
+  }
+
+  const userId = `u-${Date.now()}`;
+  const passwordHash = crypto.createHash("sha256").update(password).digest("hex");
+
+  const newUser: TCNUser = {
+    id: userId,
+    name,
+    email: email ? email.toLowerCase() : undefined,
+    phone,
+    passwordHash,
+    isEmailVerified: false,
+    isPhoneVerified: false,
+    createdAt: new Date().toISOString()
+  };
+
+  tcnUsers.push(newUser);
+
+  // Generate simulated 6-digit confirmation code
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const target = email ? email.toLowerCase() : phone;
+  tcnOTPs.push({
+    target,
+    code,
+    expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
+  });
+
+  res.json({
+    success: true,
+    message: "Registered. Verification code generated.",
+    simulatedCode: code,
+    userId
+  });
+});
+
+// API: Login User
+app.post("/api/auth/login", (req, res) => {
+  const { email, phone, password, method } = req.body;
+
+  if (method === "email") {
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const user = tcnUsers.find(u => u.email === email.toLowerCase());
+    if (!user) {
+      return res.status(404).json({ error: "Email address not found!" });
+    }
+
+    const hash = crypto.createHash("sha256").update(password).digest("hex");
+    if (user.passwordHash !== hash) {
+      return res.status(401).json({ error: "Incorrect password! Please try again." });
+    }
+
+    // Create session
+    const sessionId = `sess-${Date.now()}`;
+    const userAgent = req.headers["user-agent"] || "";
+    const ip = req.ip || "197.149.177.34";
+    
+    const newSession: TCNSession = {
+      id: sessionId,
+      userId: user.id,
+      deviceName: parseUserAgent(userAgent),
+      ipAddress: ip,
+      location: "Dar es Salaam, TZ",
+      lastActive: "Muda huu",
+      userAgent
+    };
+    tcnSessions.push(newSession);
+
+    const token = generateToken(user.id);
+    return res.json({
+      success: true,
+      token,
+      user: { id: user.id, name: user.name, email: user.email, phone: user.phone }
+    });
+  } else if (method === "phone") {
+    if (!phone) {
+      return res.status(400).json({ error: "Phone number is required" });
+    }
+
+    // Let's implement netflix-style auto registration if phone doesn't exist
+    let user = tcnUsers.find(u => u.phone === phone);
+    if (!user) {
+      user = {
+        id: `u-${Date.now()}`,
+        name: "Mteja wa TCN",
+        phone,
+        passwordHash: crypto.createHash("sha256").update("password123").digest("hex"),
+        isEmailVerified: false,
+        isPhoneVerified: false,
+        createdAt: new Date().toISOString()
+      };
+      tcnUsers.push(user);
+    }
+
+    // Generate 6-digit OTP code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    tcnOTPs.push({
+      target: phone,
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000
+    });
+
+    return res.json({
+      success: true,
+      message: "OTP Code generated.",
+      simulatedCode: code
+    });
+  }
+
+  res.status(400).json({ error: "Invalid login method" });
+});
+
+// API: Google One Tap login
+app.post("/api/auth/google-one-tap", (req, res) => {
+  const { email, name } = req.body;
+  if (!email) return res.status(400).json({ error: "Email is required" });
+
+  let user = tcnUsers.find(u => u.email === email.toLowerCase());
+  if (!user) {
+    user = {
+      id: `u-${Date.now()}`,
+      name: name || "Google User",
+      email: email.toLowerCase(),
+      passwordHash: "",
+      isEmailVerified: true,
+      isPhoneVerified: false,
+      createdAt: new Date().toISOString()
+    };
+    tcnUsers.push(user);
+  }
+
+  const sessionId = `sess-${Date.now()}`;
+  const userAgent = req.headers["user-agent"] || "";
+  const ip = req.ip || "197.149.177.34";
+  
+  const newSession: TCNSession = {
+    id: sessionId,
+    userId: user.id,
+    deviceName: parseUserAgent(userAgent),
+    ipAddress: ip,
+    location: "Dar es Salaam, TZ",
+    lastActive: "Muda huu",
+    userAgent
+  };
+  tcnSessions.push(newSession);
+
+  const token = generateToken(user.id);
+  res.json({
+    success: true,
+    token,
+    user: { id: user.id, name: user.name, email: user.email, phone: user.phone }
+  });
+});
+
+// API: Verify Phone OTP
+app.post("/api/auth/verify-otp", (req, res) => {
+  const { phone, otp } = req.body;
+  if (!phone || !otp) return res.status(400).json({ error: "Phone and OTP are required" });
+
+  const recordIndex = tcnOTPs.findIndex(r => r.target === phone && r.code === otp);
+  if (recordIndex === -1) {
+    return res.status(400).json({ error: "Invalid OTP code! Please try again." });
+  }
+
+  // Remove verified OTP
+  tcnOTPs.splice(recordIndex, 1);
+
+  const user = tcnUsers.find(u => u.phone === phone);
+  if (!user) return res.status(404).json({ error: "User profile not found" });
+
+  user.isPhoneVerified = true;
+
+  // Create session
+  const sessionId = `sess-${Date.now()}`;
+  const userAgent = req.headers["user-agent"] || "";
+  const ip = req.ip || "197.149.177.34";
+  
+  const newSession: TCNSession = {
+    id: sessionId,
+    userId: user.id,
+    deviceName: parseUserAgent(userAgent),
+    ipAddress: ip,
+    location: "Dar es Salaam, TZ",
+    lastActive: "Muda huu",
+    userAgent
+  };
+  tcnSessions.push(newSession);
+
+  const token = generateToken(user.id);
+  res.json({
+    success: true,
+    token,
+    user: { id: user.id, name: user.name, email: user.email, phone: user.phone }
+  });
+});
+
+// API: Verify Email Code
+app.post("/api/auth/verify-email", (req, res) => {
+  const { email, code } = req.body;
+  if (!email || !code) return res.status(400).json({ error: "Email and code are required" });
+
+  const recordIndex = tcnOTPs.findIndex(r => r.target === email.toLowerCase() && r.code === code);
+  if (recordIndex === -1) {
+    return res.status(400).json({ error: "Invalid confirmation code! Please try again." });
+  }
+
+  tcnOTPs.splice(recordIndex, 1);
+
+  const user = tcnUsers.find(u => u.email === email.toLowerCase());
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  user.isEmailVerified = true;
+
+  // Create session
+  const sessionId = `sess-${Date.now()}`;
+  const userAgent = req.headers["user-agent"] || "";
+  const ip = req.ip || "197.149.177.34";
+  
+  const newSession: TCNSession = {
+    id: sessionId,
+    userId: user.id,
+    deviceName: parseUserAgent(userAgent),
+    ipAddress: ip,
+    location: "Dar es Salaam, TZ",
+    lastActive: "Muda huu",
+    userAgent
+  };
+  tcnSessions.push(newSession);
+
+  const token = generateToken(user.id);
+  res.json({
+    success: true,
+    token,
+    user: { id: user.id, name: user.name, email: user.email, phone: user.phone }
+  });
+});
+
+// API: Forgot Password
+app.post("/api/auth/forgot-password", (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email is required" });
+
+  const user = tcnUsers.find(u => u.email === email.toLowerCase());
+  if (!user) return res.status(404).json({ error: "Email is not registered!" });
+
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  tcnOTPs.push({
+    target: email.toLowerCase(),
+    code,
+    expiresAt: Date.now() + 10 * 60 * 1000
+  });
+
+  res.json({
+    success: true,
+    message: "Reset code generated.",
+    simulatedCode: code
+  });
+});
+
+// API: Get Current Sessions (Device Management)
+app.get("/api/auth/devices", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Unauthorized access" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  const userId = verifyToken(token);
+  if (!userId) return res.status(401).json({ error: "Invalid or expired session token" });
+
+  const sessions = tcnSessions.filter(s => s.userId === userId).map(s => ({
+    id: s.id,
+    deviceName: s.deviceName,
+    ipAddress: s.ipAddress,
+    location: s.location,
+    lastActive: s.lastActive,
+    isCurrent: s.id.startsWith("sess-") && token.includes(s.userId) // simulation flag
+  }));
+
+  res.json(sessions);
+});
+
+// API: Log Out from a Specific Device
+app.post("/api/auth/logout-device", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Unauthorized access" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  const userId = verifyToken(token);
+  if (!userId) return res.status(401).json({ error: "Invalid or expired session token" });
+
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: "Session ID is required" });
+
+  const index = tcnSessions.findIndex(s => s.id === sessionId && s.userId === userId);
+  if (index !== -1) {
+    tcnSessions.splice(index, 1);
+    return res.json({ success: true, message: "Logged out of device successfully!" });
+  }
+
+  res.status(404).json({ error: "Session not found or unauthorized to logout" });
+});
+
+// API: Verify Current User (Validate Token on boot)
+app.get("/api/auth/me", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "No session found" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  const userId = verifyToken(token);
+  if (!userId) return res.status(401).json({ error: "Invalid or expired session" });
+
+  const user = tcnUsers.find(u => u.id === userId);
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  res.json({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone
+  });
 });
 
 // API: Get Full Catalog
