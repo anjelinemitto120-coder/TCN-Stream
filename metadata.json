@@ -1,0 +1,6 @@
+{
+  "name": "TCN Stream",
+  "description": "Commercial-grade Tanzanian and global video streaming platform featuring Bongo Movies, live TV, Swahili content, offline playback simulation, community forums, admin uploads, and Gemini-powered smart movie recommendations.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
